@@ -25,7 +25,7 @@ int main(int argc, char ** argv)
 
 	// Now create window.
 	Window window;
-	window.resize(640, 480);
+	window.resize(1080, 900);
 	window.show();
 
 	return app.exec();

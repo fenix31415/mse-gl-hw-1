@@ -6,6 +6,7 @@
 #include <QOpenGLShaderProgram>
 #include <QVBoxLayout>
 #include <QScreen>
+#include <QSlider>
 
 #include <array>
 
@@ -18,12 +19,13 @@
 namespace
 {
 
-constexpr std::array<GLfloat, 21u> vertices = {
-	0.0f, 0.707f, 1.f, 0.f, 0.f, 0.0f, 0.0f,
-	-0.5f, -0.5f, 0.f, 1.f, 0.f, 0.5f, 1.0f,
-	0.5f, -0.5f, 0.f, 0.f, 1.f, 1.0f, 0.0f,
+constexpr std::array<GLfloat, 8> vertices = {
+	-1.0f, 1.0f,
+	-1.0f, -1.0f,
+	1.0f, -1.0f,
+	1.0f, 1.0f,
 };
-constexpr std::array<GLuint, 3u> indices = {0, 1, 2};
+constexpr std::array<GLuint, 6u> indices = {0, 1, 2, 0, 2, 3};
 
 }// namespace
 
@@ -36,15 +38,37 @@ Window::Window() noexcept
 	auto fps = new QLabel(formatFPS(0), this);
 	fps->setStyleSheet("QLabel { color : white; }");
 
+	auto iters_slider = new QSlider(Qt::Horizontal);
+	iters_slider->setRange(100, 10000);
+	iters_slider->setValue(500);
+	connect(iters_slider, &QSlider::valueChanged, this, [this](float value) { max_iterations = value; });
+
+	auto iters_label = new QLabel("Iters: 0", this);
+	iters_label->setStyleSheet("QLabel { color : white; }");
+
+	auto border_slider = new QSlider(Qt::Horizontal);
+	border_slider->setRange(0, 1000);
+	border_slider->setValue(200);
+	connect(border_slider, &QSlider::valueChanged, this, [this](float value) { border = value / 100.0f; });
+
+	auto border_label = new QLabel("Border: 0", this);
+	border_label->setStyleSheet("QLabel { color : white; }");
+
 	auto layout = new QVBoxLayout();
 	layout->addWidget(fps, 1);
-
+	layout->addWidget(iters_label);
+	layout->addWidget(iters_slider);
+	layout->addWidget(border_label);
+	layout->addWidget(border_slider);
+	
 	setLayout(layout);
-
+	
 	timer_.start();
-
+	
 	connect(this, &Window::updateUI, [=] {
 		fps->setText(formatFPS(ui_.fps));
+		iters_label->setText(QString("Iters: %1").arg(max_iterations));
+		border_label->setText(QString("Border: %1").arg(border));
 	});
 }
 
@@ -53,7 +77,6 @@ Window::~Window()
 	{
 		// Free resources with context bounded.
 		const auto guard = bindContext();
-		texture_.reset();
 		program_.reset();
 	}
 }
@@ -83,25 +106,17 @@ void Window::onInit()
 	ibo_.setUsagePattern(QOpenGLBuffer::StaticDraw);
 	ibo_.allocate(indices.data(), static_cast<int>(indices.size() * sizeof(GLuint)));
 
-	texture_ = std::make_unique<QOpenGLTexture>(QImage(":/Textures/voronoi.png"));
-	texture_->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
-	texture_->setWrapMode(QOpenGLTexture::WrapMode::Repeat);
-
 	// Bind attributes
 	program_->bind();
 
 	program_->enableAttributeArray(0);
-	program_->setAttributeBuffer(0, GL_FLOAT, 0, 2, static_cast<int>(7 * sizeof(GLfloat)));
-
-	program_->enableAttributeArray(1);
-	program_->setAttributeBuffer(1, GL_FLOAT, static_cast<int>(2 * sizeof(GLfloat)), 3,
-								 static_cast<int>(7 * sizeof(GLfloat)));
-
-	program_->enableAttributeArray(2);
-	program_->setAttributeBuffer(2, GL_FLOAT, static_cast<int>(5 * sizeof(GLfloat)), 2,
-								 static_cast<int>(7 * sizeof(GLfloat)));
+	program_->setAttributeBuffer(0, GL_FLOAT, 0, 2, static_cast<int>(2 * sizeof(GLfloat)));
 
 	mvpUniform_ = program_->uniformLocation("mvp");
+	screenposUniform_ = program_->uniformLocation("screen_pos");
+	screenscaleUniform_ = program_->uniformLocation("screen_scale");
+	maxitersUniform_ = program_->uniformLocation("max_iterations");
+	borderUniform_ = program_->uniformLocation("border2");
 
 	// Release all
 	program_->release();
@@ -128,7 +143,6 @@ void Window::onRender()
 
 	// Calculate MVP matrix
 	model_.setToIdentity();
-	model_.translate(0, 0, -2);
 	view_.setToIdentity();
 	const auto mvp = projection_ * view_ * model_;
 
@@ -139,15 +153,21 @@ void Window::onRender()
 	// Update uniform value
 	program_->setUniformValue(mvpUniform_, mvp);
 
-	// Activate texture unit and bind texture
-	glActiveTexture(GL_TEXTURE0);
-	texture_->bind();
+	QVector4D pos4(pos_.x(), pos_.y(), 0, 1);
+	QVector4D pos4_new = mvp * pos4;
+	QVector2D pos2(pos4_new.x(), pos4_new.y());
+	pos2 /= QVector2D(width(), height());
+	fixWindowRatio(pos2);
+
+	program_->setUniformValue(screenposUniform_, pos2);
+	program_->setUniformValue(screenscaleUniform_, scale_);
+	program_->setUniformValue(maxitersUniform_, static_cast<int>(max_iterations));
+	program_->setUniformValue(borderUniform_, border * border);
 
 	// Draw
-	glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr);
+	glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
 
 	// Release VAO and shader program
-	texture_->release();
 	vao_.release();
 	program_->release();
 
@@ -164,14 +184,82 @@ void Window::onResize(const size_t width, const size_t height)
 {
 	// Configure viewport
 	glViewport(0, 0, static_cast<GLint>(width), static_cast<GLint>(height));
-
+	
 	// Configure matrix
 	const auto aspect = static_cast<float>(width) / static_cast<float>(height);
 	const auto zNear = 0.1f;
 	const auto zFar = 100.0f;
-	const auto fov = 60.0f;
+	const auto fov = 45.0f;
 	projection_.setToIdentity();
-	projection_.perspective(fov, aspect, zNear, zFar);
+	if (aspect > 1.0f)
+	{
+		projection_.ortho(-1.0f * aspect, 1.0f * aspect, -1.0f, 1.0f, zNear, zFar);
+	}
+	else
+	{
+		projection_.ortho(-1.0f, 1.0f, -1.0f / aspect, 1.0f / aspect, zNear, zFar);
+	}
+}
+
+void Window::mousePressEvent(QMouseEvent * e)
+{
+	dragging_ = true;
+	lastMousePos_ = e->pos();
+}
+
+void Window::mouseMoveEvent(QMouseEvent * e)
+{
+	if (dragging_)
+	{
+		QVector2D delta = QVector2D(e->pos() - lastMousePos_);
+		fixWindowRatio(delta);
+		delta.setX(-delta.x());
+
+		pos_ += delta * scale_ * 2.0f;
+
+		lastMousePos_ = e->pos();
+	}
+}
+
+void Window::mouseReleaseEvent(QMouseEvent *)
+{
+	dragging_ = false;
+}
+
+void Window::wheelEvent(QWheelEvent * e)
+{
+	float scaleFactor = e->angleDelta().y() < 0 ? 0.1f : -0.1f;
+
+	QVector2D center(width() * 0.5f, height() * 0.5f);
+	QVector2D mouseVec = QVector2D(e->position()) - center;
+
+	mouseVec.setX(-mouseVec.x());
+	fixWindowRatio(mouseVec);
+
+	pos_ += mouseVec * scaleFactor * scale_ * 2;
+
+	scale_ *= (1.0f + scaleFactor);
+
+}
+
+void Window::keyPressEvent(QKeyEvent * event)
+{
+	if (event->key() == Qt::Key_Escape) {
+		close();
+	}
+}
+
+void Window::fixWindowRatio(QVector2D & pos) const
+{
+	float aspectRatio = static_cast<float>(width()) / height();
+	if (aspectRatio > 1)
+	{
+		pos.setX(pos.x() * aspectRatio);
+	}
+	else
+	{
+		pos.setY(pos.y() / aspectRatio);
+	}
 }
 
 Window::PerfomanceMetricsGuard::PerfomanceMetricsGuard(std::function<void()> callback)

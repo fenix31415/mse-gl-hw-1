@@ -29,6 +29,24 @@ constexpr std::array<GLuint, 6u> indices = {0, 1, 2, 0, 2, 3};
 
 }// namespace
 
+QVector4D find_ranges(std::vector<float> & data)
+{
+	std::sort(data.begin(), data.end());
+	size_t lowest = 0;
+	while (lowest < data.size() && data[lowest] == 0.0f)
+	{
+		++lowest;
+	}
+
+	size_t size = data.size();
+	if (lowest == size) {
+		return QVector4D(0.0001f, 0.33333f, 0.66667f, 1.00f);
+	}
+	size_t length = size - lowest;
+	QVector4D ranges(data[lowest], data[lowest + length * 3 / 4 - 1], data[lowest + length * 7 / 8 - 1], data[size - 1]);
+	return ranges;
+}
+
 Window::Window() noexcept
 {
 	const auto formatFPS = [](const auto value) {
@@ -117,6 +135,10 @@ void Window::onInit()
 	screenscaleUniform_ = program_->uniformLocation("screen_scale");
 	maxitersUniform_ = program_->uniformLocation("max_iterations");
 	borderUniform_ = program_->uniformLocation("border2");
+	rangesUniform_ = program_->uniformLocation("color_ranges");
+
+	pixel_data.assign(width() * height(), 0);
+	ranges = QVector4D(0.0001f, 0.33333f, 0.66667f, 1.00f);
 
 	// Release all
 	program_->release();
@@ -128,6 +150,7 @@ void Window::onInit()
 
 	// Еnable depth test and face culling
 	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LESS);
 	glEnable(GL_CULL_FACE);
 
 	// Clear all FBO buffers
@@ -163,9 +186,14 @@ void Window::onRender()
 	program_->setUniformValue(screenscaleUniform_, scale_);
 	program_->setUniformValue(maxitersUniform_, static_cast<int>(max_iterations));
 	program_->setUniformValue(borderUniform_, border * border);
+	program_->setUniformValue(rangesUniform_, ranges);
 
 	// Draw
 	glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+
+	pixel_data.assign(width() * height(), 0);
+	glReadPixels(0, 0, width(), height(), GL_DEPTH_COMPONENT, GL_FLOAT, pixel_data.data());
+	ranges = find_ranges(pixel_data);
 
 	// Release VAO and shader program
 	vao_.release();

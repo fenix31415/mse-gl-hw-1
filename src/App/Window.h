@@ -60,6 +60,7 @@ private:
 	GLint screenscaleUniform_ = -1;
 	GLint maxitersUniform_ = -1;
 	GLint borderUniform_ = -1;
+	GLint rangesUniform_ = -1;
 
 	QOpenGLBuffer vbo_{QOpenGLBuffer::Type::VertexBuffer};
 	QOpenGLBuffer ibo_{QOpenGLBuffer::Type::IndexBuffer};
@@ -77,6 +78,9 @@ private:
 
 	float max_iterations = 500;
 	float border = 2;
+
+	std::vector<float> pixel_data;
+	QVector4D ranges;
 
 	std::unique_ptr<QOpenGLTexture> texture_;
 	std::unique_ptr<QOpenGLShaderProgram> program_;
